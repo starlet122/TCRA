@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 import logging
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = '0,1,2,3'   
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -14,20 +15,39 @@ from os.path import join
 from model_helper import train_step, evaluate
 from model import RuGNN
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 def save_model(model, save_variables):
+    """
+    Save the parameters of the model
+    :param model:
+    :param save_variables:
+    :return:
+    """
     cfg = utils.get_global_config()
     pickle.dump(cfg, open('config.pickle', 'wb'))
 
     state_dict = {
-        'model_state_dict': model.state_dict(),  
+        'model_state_dict': model.state_dict(),  # model parameters
         **save_variables
     }
 
-    torch.save(state_dict, 'checkpoint.torch') 
+    torch.save(state_dict, 'checkpoint.torch')   
 
 
 def get_linear_scheduler_with_warmup(optimizer, warmup_steps: int, max_steps: int):
+    """
+    Create scheduler with a learning rate that decreases linearly after
+    linearly increasing during a warmup period.
+    """
     def lr_lambda(current_step):
+        """
+        Compute a ratio according to current step,
+        by which the optimizer's lr will be mutiplied.
+        :param current_step:
+        :return:
+        """
         assert current_step <= max_steps
         if current_step < warmup_steps:
             return current_step / warmup_steps
@@ -82,11 +102,13 @@ def main(config: DictConfig):
     model = RuGNN(cfg.h_dim)
     model = model.to(device)
 
+    num_params = count_parameters(model)
+    logging.info(f"Number of parameters: {num_params}")
+
     # load the knowledge graph
     src, dst, rel, hr2eid, rt2eid = construct_kg('train', directed=False)
     kg = get_kg(src, dst, rel, device)
 
-    # losd the rules
     rules = read_rules()
     ruleset = RuleDataset(rules)
     g = GloNode()
@@ -104,6 +126,8 @@ def main(config: DictConfig):
         num_workers=cfg.cpu_worker_num,
         collate_fn=TrainDataset.collate_fn
     )
+
+
 
     logging.info('-----Model Parameter Configuration-----')
     for name, param in model.named_parameters():
@@ -129,6 +153,7 @@ def main(config: DictConfig):
     for epoch in range(n_epoch):
         loss_list = []
         for batch_data in train_loader:
+            # ruleset = RuleDataset(rules)
             train_log = train_step(model, batch_data, kg, ruleset.R, ruleset.R_mask, ruleset.IM, g.Ht, optimizer, scheduler)
             loss_list.append(train_log['loss'])
             # get a new kg, since in previous kg some edges are removed.
@@ -164,13 +189,15 @@ def main(config: DictConfig):
         msg += val_msg
         logging.info(msg)
 
+        # whether early stopping
         if epoch - last_improve_epoch > cfg.max_no_improve:
             logging.info("Long time no improvenment, stop training...")
             break
 
     logging.info('Training end...')
 
-    # evaluate
+    # evaluate train and test set
+    # load best model
     checkpoint = torch.load('checkpoint.torch')
     model.load_state_dict(checkpoint['model_state_dict'])
 
@@ -200,7 +227,3 @@ def main(config: DictConfig):
 
 if __name__ == '__main__':
     main()
-
-# Here are the codes of the main function of the paper "A Unified Joint Approach with Topological Context Learning and Rule Augmentation for Knowledge Graph Completion" for reference. The remaining codes will be made public after the paper is accepted.
-
-
